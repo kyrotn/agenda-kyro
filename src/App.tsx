@@ -197,22 +197,67 @@ async function googleRequest<T>(token: string, url: string, init?: RequestInit):
   return result;
 }
 
-async function deleteGoogleCalendarEvent(task: Task, session: GoogleSession) {
-  if (!task.calendarEventId) return;
+function calendarSummary(task: Task, sourceData: AgendaData) {
+  const contact = sourceData.contacts.find((item) => item.id === task.contactId);
+  return contact ? `Kyro: ${task.title} - ${contact.name}` : `Kyro: ${task.title}`;
+}
+
+async function findGoogleCalendarEvent(task: Task, sourceData: AgendaData, session: GoogleSession) {
+  if (task.calendarEventId) return task.calendarEventId;
+  if (!task.dueDate) return "";
+
+  const token = requireValidGoogleToken(session);
+  const dayStart = new Date(`${task.dueDate}T00:00:00`);
+  const dayEnd = new Date(dayStart);
+  dayEnd.setDate(dayEnd.getDate() + 1);
+  const baseParams = {
+    timeMin: dayStart.toISOString(),
+    timeMax: dayEnd.toISOString(),
+    singleEvents: "true",
+    showDeleted: "false",
+    maxResults: "20",
+  };
+  const linkedParams = new URLSearchParams({
+    ...baseParams,
+    privateExtendedProperty: `kyroTaskId=${task.id}`,
+  });
+  const linked = await googleRequest<{ items?: Array<{ id?: string }> }>(
+    token,
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events?${linkedParams}`,
+  );
+  const linkedId = linked.items?.find((item) => item.id)?.id;
+  if (linkedId) return linkedId;
+
+  const expectedSummary = calendarSummary(task, sourceData);
+  const expectedStart = new Date(`${task.dueDate}T${task.dueTime || "09:00"}:00`).getTime();
+  const recoveryParams = new URLSearchParams({ ...baseParams, q: expectedSummary });
+  const recovered = await googleRequest<{
+    items?: Array<{ id?: string; summary?: string; start?: { dateTime?: string } }>;
+  }>(token, `https://www.googleapis.com/calendar/v3/calendars/primary/events?${recoveryParams}`);
+  return recovered.items?.find((item) => {
+    const eventStart = item.start?.dateTime ? new Date(item.start.dateTime).getTime() : Number.NaN;
+    return item.id && item.summary === expectedSummary && Math.abs(eventStart - expectedStart) < 60_000;
+  })?.id || "";
+}
+
+async function deleteGoogleCalendarEvent(task: Task, sourceData: AgendaData, session: GoogleSession) {
+  const eventId = await findGoogleCalendarEvent(task, sourceData, session);
+  if (!eventId) return false;
   const token = requireValidGoogleToken(session);
   const response = await fetch(
-    `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(task.calendarEventId)}`,
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`,
     {
       method: "DELETE",
       headers: { Authorization: `Bearer ${token}` },
     },
   );
   if (response.status === 401) throw new Error("Sua autorizacao Google expirou. Conecte novamente.");
-  if (response.status === 404 || response.status === 410) return;
+  if (response.status === 404 || response.status === 410) return true;
   if (!response.ok) {
     const result = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
     throw new Error(result.error?.message || "O Google recusou a exclusao do evento.");
   }
+  return true;
 }
 
 function authUserFromFirebase(user: User): AuthUser {
@@ -376,6 +421,8 @@ export function AgendaApp() {
   const [authLoading, setAuthLoading] = useState(isFirebaseConfigured);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [google, setGoogle] = useState<GoogleSession>(EMPTY_GOOGLE);
+  const [taskContactFilter, setTaskContactFilter] = useState("all");
+  const [taskContactId, setTaskContactId] = useState("");
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -466,6 +513,13 @@ export function AgendaApp() {
     );
   }, [contactMap, data.tasks, flowMap, search]);
 
+  const taskContacts = useMemo(
+    () => taskContactFilter === "all"
+      ? data.contacts
+      : data.contacts.filter((contact) => contact.flowId === taskContactFilter),
+    [data.contacts, taskContactFilter],
+  );
+
   const openTasks = data.tasks.filter((task) => task.status !== "Concluida");
   const todayTasks = openTasks.filter((task) => task.dueDate === today);
   const doneTasks = data.tasks.filter((task) => task.status === "Concluida");
@@ -489,6 +543,12 @@ export function AgendaApp() {
   function changeView(nextView: ViewName) {
     setView(nextView);
     setMenuOpen(false);
+  }
+
+  function openTaskModal() {
+    setTaskContactFilter("all");
+    setTaskContactId("");
+    setModal("task");
   }
 
   async function createContact(event: FormEvent<HTMLFormElement>) {
@@ -584,12 +644,13 @@ export function AgendaApp() {
   }
 
   async function removeTask(task: Task) {
-    const calendarNotice = task.calendarEventId ? " Ela tambem sera removida do Google Agenda." : "";
+    const calendarNotice = task.dueDate ? " O evento correspondente tambem sera removido do Google Agenda." : "";
     if (!window.confirm(`Excluir a tarefa "${task.title}"?${calendarNotice}`)) return;
     setSyncing(true);
     setError("");
     try {
-      if (task.calendarEventId) {
+      let removedFromCalendar = false;
+      if (task.calendarEventId || task.dueDate) {
         let session = google;
         if (!session.connected || !session.token || session.expiresAt <= Date.now()) {
           const result = await signInWithPopup(auth, googleProvider);
@@ -598,10 +659,10 @@ export function AgendaApp() {
           if (!session.connected) throw new Error("Nao foi possivel autorizar o Google Agenda.");
           setGoogle(session);
         }
-        await deleteGoogleCalendarEvent(task, session);
+        removedFromCalendar = await deleteGoogleCalendarEvent(task, data, session);
       }
       await mutate({ action: "deleteTask", taskId: task.id });
-      showToast(task.calendarEventId ? "Tarefa excluida da Kyro e do Google Agenda." : "Tarefa excluida.");
+      showToast(removedFromCalendar ? "Tarefa excluida da Kyro e do Google Agenda." : "Tarefa excluida.");
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : "Nao foi possivel excluir a tarefa.");
     } finally {
@@ -654,7 +715,7 @@ export function AgendaApp() {
     const start = new Date(`${task.dueDate}T${task.dueTime || "09:00"}:00`);
     const end = new Date(start.getTime() + 60 * 60 * 1000);
     const event = {
-      summary: contact ? `Kyro: ${task.title} - ${contact.name}` : `Kyro: ${task.title}`,
+      summary: calendarSummary(task, sourceData),
       description: [
         `Fluxo: ${flow?.name || "Sem fluxo"}`,
         `Prioridade: ${task.priority}`,
@@ -666,6 +727,7 @@ export function AgendaApp() {
       start: { dateTime: start.toISOString(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Sao_Paulo" },
       end: { dateTime: end.toISOString(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Sao_Paulo" },
       reminders: { useDefault: false, overrides: [{ method: "popup", minutes: 15 }] },
+      extendedProperties: { private: { kyroTaskId: task.id } },
     };
     const endpoint = task.calendarEventId
       ? `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(task.calendarEventId)}`
@@ -862,7 +924,7 @@ export function AgendaApp() {
             <p>{formatLongDate()}</p>
           </div>
           <div className="heading-actions">
-            <button className="button secondary" type="button" onClick={() => setModal("task")}>
+            <button className="button secondary" type="button" onClick={openTaskModal}>
               <ListTodo size={17} /> Nova tarefa
             </button>
             <button className="button primary" type="button" onClick={() => setModal("contact")}>
@@ -958,7 +1020,7 @@ export function AgendaApp() {
       <>
         <div className="page-heading compact-heading">
           <div><span className="page-kicker">Organizacao</span><h1>Tarefas</h1><p>{openTasks.length} tarefa(s) em aberto</p></div>
-          <button className="button primary" type="button" onClick={() => setModal("task")}><Plus size={17} /> Nova tarefa</button>
+          <button className="button primary" type="button" onClick={openTaskModal}><Plus size={17} /> Nova tarefa</button>
         </div>
         <section className="surface data-surface">
           <div className="task-filters">
@@ -1116,7 +1178,8 @@ export function AgendaApp() {
         <Modal title="Nova tarefa" icon={<ListTodo />} onClose={() => setModal(null)}>
           <form className="modal-form two-columns" onSubmit={createTask}>
             <label className="full-field">Titulo<input name="title" required autoFocus placeholder="O que precisa ser feito?" /></label>
-            <label>Contato<select name="contactId" defaultValue=""><option value="">Sem contato</option>{data.contacts.map((contact) => <option key={contact.id} value={contact.id}>{contact.name}</option>)}</select></label>
+            <label>Filtrar contatos<select value={taskContactFilter} onChange={(event) => { setTaskContactFilter(event.target.value); setTaskContactId(""); }}><option value="all">Todos</option>{data.flows.map((flow) => <option key={flow.id} value={flow.id}>{flow.name}</option>)}</select></label>
+            <label>Contato<select name="contactId" value={taskContactId} onChange={(event) => setTaskContactId(event.target.value)}><option value="">Sem contato</option>{taskContacts.map((contact) => <option key={contact.id} value={contact.id}>{contact.name}</option>)}</select></label>
             <label>Fluxo<select name="flowId" defaultValue={data.flows[0]?.id}>{data.flows.map((flow) => <option key={flow.id} value={flow.id}>{flow.name}</option>)}</select></label>
             <label>Data<input name="dueDate" type="date" defaultValue={today} /></label>
             <label>Hora<input name="dueTime" type="time" defaultValue="09:00" /></label>
