@@ -197,6 +197,24 @@ async function googleRequest<T>(token: string, url: string, init?: RequestInit):
   return result;
 }
 
+async function deleteGoogleCalendarEvent(task: Task, session: GoogleSession) {
+  if (!task.calendarEventId) return;
+  const token = requireValidGoogleToken(session);
+  const response = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(task.calendarEventId)}`,
+    {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    },
+  );
+  if (response.status === 401) throw new Error("Sua autorizacao Google expirou. Conecte novamente.");
+  if (response.status === 404 || response.status === 410) return;
+  if (!response.ok) {
+    const result = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
+    throw new Error(result.error?.message || "O Google recusou a exclusao do evento.");
+  }
+}
+
 function authUserFromFirebase(user: User): AuthUser {
   return {
     id: user.uid,
@@ -566,12 +584,28 @@ export function AgendaApp() {
   }
 
   async function removeTask(task: Task) {
-    if (!window.confirm(`Excluir a tarefa "${task.title}"?`)) return;
+    const calendarNotice = task.calendarEventId ? " Ela tambem sera removida do Google Agenda." : "";
+    if (!window.confirm(`Excluir a tarefa "${task.title}"?${calendarNotice}`)) return;
+    setSyncing(true);
+    setError("");
     try {
+      if (task.calendarEventId) {
+        let session = google;
+        if (!session.connected || !session.token || session.expiresAt <= Date.now()) {
+          const result = await signInWithPopup(auth, googleProvider);
+          const credential = GoogleAuthProvider.credentialFromResult(result);
+          session = googleSessionFromCredential(result.user, credential?.accessToken || "");
+          if (!session.connected) throw new Error("Nao foi possivel autorizar o Google Agenda.");
+          setGoogle(session);
+        }
+        await deleteGoogleCalendarEvent(task, session);
+      }
       await mutate({ action: "deleteTask", taskId: task.id });
-      showToast("Tarefa excluida.");
-    } catch {
-      // The error banner already contains the useful message.
+      showToast(task.calendarEventId ? "Tarefa excluida da Kyro e do Google Agenda." : "Tarefa excluida.");
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Nao foi possivel excluir a tarefa.");
+    } finally {
+      setSyncing(false);
     }
   }
 
