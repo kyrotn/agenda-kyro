@@ -1,13 +1,13 @@
 # Kyro Agenda Particular
 
-Agenda pessoal hospedada no GitHub Pages, com login Google, dados privados no Supabase e sincronizacao com o Google Agenda.
+Agenda pessoal hospedada no GitHub Pages, com login Google, dados privados no Firebase e sincronizacao com o Google Agenda.
 
 ## Configuracao
 
-1. Crie um projeto no Supabase e execute o arquivo de `supabase/migrations` no SQL Editor.
-2. Ative o provedor Google no Supabase Authentication.
-3. Configure a URL do GitHub Pages em Authentication > URL Configuration.
-4. No GitHub, cadastre `VITE_SUPABASE_URL` como variable e `VITE_SUPABASE_ANON_KEY` como secret.
+1. Crie um projeto Firebase e registre um aplicativo Web.
+2. Ative Google em Authentication e crie o banco Cloud Firestore.
+3. Publique as regras de `firestore.rules`.
+4. No GitHub, cadastre as variaveis `VITE_FIREBASE_*` do aplicativo Web.
 5. Em Settings > Pages, selecione GitHub Actions como fonte de publicacao.
 
-Os dados sao protegidos por Row Level Security e cada conta Google acessa somente seus proprios registros.
+As regras do Firestore garantem que cada conta Google acesse somente seus proprios registros.

@@ -29,8 +29,10 @@ import {
 } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { Session, User } from "@supabase/supabase-js";
-import { isSupabaseConfigured, supabase } from "./supabase";
+import type { User } from "firebase/auth";
+import { GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut as firebaseSignOut } from "firebase/auth";
+import { collection, deleteDoc, doc, getDoc, getDocs, setDoc, updateDoc, writeBatch } from "firebase/firestore";
+import { auth, db, googleProvider, isFirebaseConfigured } from "./firebase";
 
 type Flow = {
   id: string;
@@ -132,12 +134,6 @@ const NAV_ITEMS: Array<{ id: ViewName; label: string; icon: typeof LayoutDashboa
   { id: "integrations", label: "Integracoes", icon: Settings2 },
 ];
 
-const GOOGLE_SCOPES = [
-  "https://www.googleapis.com/auth/calendar.events",
-  "https://www.googleapis.com/auth/spreadsheets",
-  "https://www.googleapis.com/auth/gmail.send",
-].join(" ");
-
 const LOGO_URL = `${import.meta.env.BASE_URL}kyro-logo.png`;
 
 const DEFAULT_FLOWS = [
@@ -196,25 +192,26 @@ async function googleRequest<T>(token: string, url: string, init?: RequestInit):
     },
   });
   const result = (await response.json().catch(() => ({}))) as T & { error?: { message?: string } };
+  if (response.status === 401) throw new Error("Sua autorizacao Google expirou. Conecte novamente.");
   if (!response.ok) throw new Error(result.error?.message || "O Google recusou esta operacao.");
   return result;
 }
 
-function authUserFromSupabase(user: User): AuthUser {
+function authUserFromFirebase(user: User): AuthUser {
   return {
-    id: user.id,
+    id: user.uid,
     email: user.email || "",
-    name: String(user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split("@")[0] || "Agenda Kyro"),
-    picture: String(user.user_metadata?.avatar_url || user.user_metadata?.picture || ""),
+    name: user.displayName || user.email?.split("@")[0] || "Agenda Kyro",
+    picture: user.photoURL || "",
   };
 }
 
-function googleSessionFromSupabase(session: Session | null): GoogleSession {
-  if (!session?.provider_token) return EMPTY_GOOGLE;
+function googleSessionFromCredential(user: User, token: string): GoogleSession {
+  if (!token) return EMPTY_GOOGLE;
   return {
     connected: true,
-    token: session.provider_token,
-    email: session.user.email || "",
+    token,
+    email: user.email || "",
     expiresAt: Date.now() + 55 * 60 * 1000,
   };
 }
@@ -228,48 +225,51 @@ function normalizePhone(value: string) {
 }
 
 async function readAgendaData(user: AuthUser): Promise<AgendaData> {
-  const [flowResult, contactResult, taskResult, settingsResult] = await Promise.all([
-    supabase.from("kyro_flows").select("*").order("position", { ascending: true }),
-    supabase.from("kyro_contacts").select("*").order("createdAt", { ascending: false }),
-    supabase.from("kyro_tasks").select("*").order("dueDate", { ascending: true }).order("dueTime", { ascending: true }),
-    supabase.from("kyro_settings").select("*").maybeSingle(),
+  const [flowSnapshot, contactSnapshot, taskSnapshot, settingsSnapshot] = await Promise.all([
+    getDocs(collection(db, "users", user.id, "flows")),
+    getDocs(collection(db, "users", user.id, "contacts")),
+    getDocs(collection(db, "users", user.id, "tasks")),
+    getDoc(doc(db, "users", user.id, "settings", "profile")),
   ]);
 
-  for (const result of [flowResult, contactResult, taskResult, settingsResult]) {
-    if (result.error) throw result.error;
-  }
-
-  let flowRows = (flowResult.data || []) as Flow[];
+  let flowRows = flowSnapshot.docs.map((item) => item.data() as Flow).sort((a, b) => a.position - b.position);
   if (!flowRows.length) {
     const seedRows = DEFAULT_FLOWS.map((flow) => ({
       ...flow,
       id: `${flow.id}:${user.id}`,
       userId: user.id,
       ownerEmail: user.email,
+      createdAt: new Date().toISOString(),
     }));
-    const seedResult = await supabase.from("kyro_flows").insert(seedRows).select("*");
-    if (seedResult.error) throw seedResult.error;
-    flowRows = (seedResult.data || seedRows) as Flow[];
+    const seedBatch = writeBatch(db);
+    for (const flow of seedRows) seedBatch.set(doc(db, "users", user.id, "flows", flow.id), flow);
+    await seedBatch.commit();
+    flowRows = seedRows;
   }
 
-  let setting = settingsResult.data as AgendaData["settings"] | null;
+  let setting = settingsSnapshot.exists() ? settingsSnapshot.data() as AgendaData["settings"] : null;
   if (!setting) {
-    const settingRow = {
+    setting = {
       userId: user.id,
       ownerEmail: user.email,
       googleClientId: "",
       sheetId: "",
     };
-    const settingResult = await supabase.from("kyro_settings").insert(settingRow).select("*").single();
-    if (settingResult.error) throw settingResult.error;
-    setting = settingResult.data as AgendaData["settings"];
+    await setDoc(doc(db, "users", user.id, "settings", "profile"), setting);
   }
+
+  const contacts = contactSnapshot.docs
+    .map((item) => item.data() as Contact)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const tasks = taskSnapshot.docs
+    .map((item) => item.data() as Task)
+    .sort((a, b) => `${a.dueDate} ${a.dueTime}`.localeCompare(`${b.dueDate} ${b.dueTime}`));
 
   return {
     ownerEmail: user.email,
     flows: flowRows,
-    contacts: (contactResult.data || []) as Contact[],
-    tasks: (taskResult.data || []) as Task[],
+    contacts,
+    tasks,
     settings: setting,
   };
 }
@@ -277,7 +277,6 @@ async function readAgendaData(user: AuthUser): Promise<AgendaData> {
 async function mutateAgenda(user: AuthUser, current: AgendaData, payload: Record<string, unknown>) {
   const action = clean(payload.action);
   const now = new Date().toISOString();
-  let result: { error: Error | null } | null = null;
 
   if (action === "createContact") {
     const name = clean(payload.name);
@@ -286,16 +285,18 @@ async function mutateAgenda(user: AuthUser, current: AgendaData, payload: Record
     if (current.contacts.some((contact) => normalizePhone(contact.phone) === normalizePhone(phone))) {
       throw new Error("Ja existe um contato com este telefone.");
     }
-    result = await supabase.from("kyro_contacts").insert({
-      id: crypto.randomUUID(), userId: user.id, ownerEmail: user.email, name, phone,
+    const id = crypto.randomUUID();
+    await setDoc(doc(db, "users", user.id, "contacts", id), {
+      id, userId: user.id, ownerEmail: user.email, name, phone,
       city: clean(payload.city), niche: clean(payload.niche),
       flowId: clean(payload.flowId) || current.flows[0]?.id, createdAt: now, updatedAt: now,
     });
   } else if (action === "createTask") {
     const title = clean(payload.title);
     if (!title) throw new Error("Informe o titulo da tarefa.");
-    result = await supabase.from("kyro_tasks").insert({
-      id: crypto.randomUUID(), userId: user.id, ownerEmail: user.email, title,
+    const id = crypto.randomUUID();
+    await setDoc(doc(db, "users", user.id, "tasks", id), {
+      id, userId: user.id, ownerEmail: user.email, title,
       contactId: clean(payload.contactId) || null,
       flowId: clean(payload.flowId) || current.flows[0]?.id,
       priority: ["Baixa", "Media", "Alta"].includes(clean(payload.priority)) ? clean(payload.priority) : "Media",
@@ -309,34 +310,37 @@ async function mutateAgenda(user: AuthUser, current: AgendaData, payload: Record
       throw new Error("Ja existe um fluxo com este nome.");
     }
     const color = /^#[0-9a-f]{6}$/i.test(clean(payload.color)) ? clean(payload.color) : "#2a9d8f";
-    result = await supabase.from("kyro_flows").insert({
-      id: crypto.randomUUID(), userId: user.id, ownerEmail: user.email, name, color,
+    const id = crypto.randomUUID();
+    await setDoc(doc(db, "users", user.id, "flows", id), {
+      id, userId: user.id, ownerEmail: user.email, name, color,
       position: current.flows.length + 1, createdAt: now,
     });
   } else if (action === "updateContactFlow") {
-    result = await supabase.from("kyro_contacts").update({ flowId: clean(payload.flowId), updatedAt: now }).eq("id", clean(payload.contactId));
+    await updateDoc(doc(db, "users", user.id, "contacts", clean(payload.contactId)), { flowId: clean(payload.flowId), updatedAt: now });
   } else if (action === "updateTaskStatus") {
     const status = ["Aberta", "Em andamento", "Concluida"].includes(clean(payload.status)) ? clean(payload.status) : "Aberta";
-    result = await supabase.from("kyro_tasks").update({ status, updatedAt: now }).eq("id", clean(payload.taskId));
+    await updateDoc(doc(db, "users", user.id, "tasks", clean(payload.taskId)), { status, updatedAt: now });
   } else if (action === "setTaskCalendarEvent") {
-    result = await supabase.from("kyro_tasks").update({ calendarEventId: clean(payload.calendarEventId), updatedAt: now }).eq("id", clean(payload.taskId));
+    await updateDoc(doc(db, "users", user.id, "tasks", clean(payload.taskId)), { calendarEventId: clean(payload.calendarEventId), updatedAt: now });
   } else if (action === "deleteContact") {
     const contactId = clean(payload.contactId);
-    const unlinkResult = await supabase.from("kyro_tasks").update({ contactId: null, updatedAt: now }).eq("contactId", contactId);
-    if (unlinkResult.error) throw unlinkResult.error;
-    result = await supabase.from("kyro_contacts").delete().eq("id", contactId);
+    const deleteBatch = writeBatch(db);
+    for (const task of current.tasks.filter((item) => item.contactId === contactId)) {
+      deleteBatch.update(doc(db, "users", user.id, "tasks", task.id), { contactId: null, updatedAt: now });
+    }
+    deleteBatch.delete(doc(db, "users", user.id, "contacts", contactId));
+    await deleteBatch.commit();
   } else if (action === "deleteTask") {
-    result = await supabase.from("kyro_tasks").delete().eq("id", clean(payload.taskId));
+    await deleteDoc(doc(db, "users", user.id, "tasks", clean(payload.taskId)));
   } else if (action === "updateSettings") {
-    result = await supabase.from("kyro_settings").upsert({
+    await setDoc(doc(db, "users", user.id, "settings", "profile"), {
       userId: user.id, ownerEmail: user.email,
       googleClientId: clean(payload.googleClientId), sheetId: clean(payload.sheetId), updatedAt: now,
-    });
+    }, { merge: true });
   } else {
     throw new Error("Operacao invalida.");
   }
 
-  if (result?.error) throw result.error;
   return readAgendaData(user);
 }
 
@@ -345,13 +349,13 @@ export function AgendaApp() {
   const [view, setView] = useState<ViewName>("dashboard");
   const [modal, setModal] = useState<ModalName>(null);
   const [search, setSearch] = useState("");
-  const [loading, setLoading] = useState(isSupabaseConfigured);
+  const [loading, setLoading] = useState(isFirebaseConfigured);
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
-  const [error, setError] = useState(isSupabaseConfigured ? "" : "A conexao segura ainda precisa ser configurada.");
+  const [error, setError] = useState(isFirebaseConfigured ? "" : "A conexao segura ainda precisa ser configurada.");
   const [toast, setToast] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
-  const [authLoading, setAuthLoading] = useState(isSupabaseConfigured);
+  const [authLoading, setAuthLoading] = useState(isFirebaseConfigured);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [google, setGoogle] = useState<GoogleSession>(EMPTY_GOOGLE);
 
@@ -362,9 +366,9 @@ export function AgendaApp() {
 
   useEffect(() => {
     let active = true;
-    async function applySession(session: Session | null) {
+    async function applyUser(firebaseUser: User | null) {
       if (!active) return;
-      if (!session?.user) {
+      if (!firebaseUser) {
         setAuthUser(null);
         setGoogle(EMPTY_GOOGLE);
         setData(EMPTY_DATA);
@@ -373,9 +377,8 @@ export function AgendaApp() {
         return;
       }
 
-      const user = authUserFromSupabase(session.user);
+      const user = authUserFromFirebase(firebaseUser);
       setAuthUser(user);
-      setGoogle(googleSessionFromSupabase(session));
       setLoading(true);
       try {
         const result = await readAgendaData(user);
@@ -390,28 +393,15 @@ export function AgendaApp() {
       }
     }
 
-    if (!isSupabaseConfigured) {
+    if (!isFirebaseConfigured) {
       return () => { active = false; };
     }
 
-    void supabase.auth.getSession().then(({ data: { session }, error: sessionError }) => {
-      if (sessionError) {
-        if (active) {
-          setError(sessionError.message);
-          setAuthLoading(false);
-        }
-        return;
-      }
-      void applySession(session);
-    });
-
-    const { data: authSubscription } = supabase.auth.onAuthStateChange((_event, session) => {
-      window.setTimeout(() => void applySession(session), 0);
-    });
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => void applyUser(firebaseUser));
 
     return () => {
       active = false;
-      authSubscription.subscription.unsubscribe();
+      unsubscribe();
     };
   }, []);
 
@@ -586,22 +576,19 @@ export function AgendaApp() {
   }
 
   async function signInWithGoogle() {
-    if (!isSupabaseConfigured) {
+    if (!isFirebaseConfigured) {
       setError("A conexao segura ainda precisa ser configurada.");
       return;
     }
     setSyncing(true);
     setError("");
     try {
-      const { error: signInError } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          scopes: GOOGLE_SCOPES,
-          redirectTo: new URL(import.meta.env.BASE_URL, window.location.href).toString(),
-          queryParams: { access_type: "offline", prompt: "consent" },
-        },
-      });
-      if (signInError) throw signInError;
+      const result = await signInWithPopup(auth, googleProvider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      const user = authUserFromFirebase(result.user);
+      setAuthUser(user);
+      setGoogle(googleSessionFromCredential(result.user, credential?.accessToken || ""));
+      setData(await readAgendaData(user));
     } catch (connectError) {
       setError(connectError instanceof Error ? connectError.message : "Nao foi possivel conectar ao Google.");
     } finally {
@@ -616,9 +603,13 @@ export function AgendaApp() {
   async function signOut() {
     setSyncing(true);
     setError("");
-    const { error: signOutError } = await supabase.auth.signOut();
-    if (signOutError) setError(signOutError.message);
-    setSyncing(false);
+    try {
+      await firebaseSignOut(auth);
+    } catch (signOutError) {
+      setError(signOutError instanceof Error ? signOutError.message : "Nao foi possivel sair.");
+    } finally {
+      setSyncing(false);
+    }
   }
 
   async function syncTaskWithCalendar(task: Task, sourceData = data) {
@@ -1127,7 +1118,7 @@ function GoogleLoginScreen({ error, busy, onLogin }: { error: string; busy: bool
         <span className="login-kicker">Agenda particular</span>
         <h1>Entre na sua agenda</h1>
         <p>Use sua conta Google para acessar seus contatos e tarefas.</p>
-        <button className="button google-login-button" type="button" onClick={onLogin} disabled={busy || !isSupabaseConfigured}>
+        <button className="button google-login-button" type="button" onClick={onLogin} disabled={busy || !isFirebaseConfigured}>
           {busy ? <LoaderCircle className="spin" size={19} /> : <span className="google-mark">G</span>}
           Entrar com Google
         </button>
