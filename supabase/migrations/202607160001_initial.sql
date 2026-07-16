@@ -1,4 +1,4 @@
-create table if not exists public.flows (
+create table if not exists public.kyro_flows (
   id text primary key,
   "userId" uuid not null references auth.users(id) on delete cascade,
   "ownerEmail" text not null default '',
@@ -8,7 +8,7 @@ create table if not exists public.flows (
   "createdAt" timestamptz not null default now()
 );
 
-create table if not exists public.contacts (
+create table if not exists public.kyro_contacts (
   id text primary key,
   "userId" uuid not null references auth.users(id) on delete cascade,
   "ownerEmail" text not null default '',
@@ -21,7 +21,7 @@ create table if not exists public.contacts (
   "updatedAt" timestamptz not null default now()
 );
 
-create table if not exists public.tasks (
+create table if not exists public.kyro_tasks (
   id text primary key,
   "userId" uuid not null references auth.users(id) on delete cascade,
   "ownerEmail" text not null default '',
@@ -38,7 +38,7 @@ create table if not exists public.tasks (
   "updatedAt" timestamptz not null default now()
 );
 
-create table if not exists public.settings (
+create table if not exists public.kyro_settings (
   "userId" uuid primary key references auth.users(id) on delete cascade,
   "ownerEmail" text not null default '',
   "googleClientId" text not null default '',
@@ -46,23 +46,23 @@ create table if not exists public.settings (
   "updatedAt" timestamptz not null default now()
 );
 
-create index if not exists flows_user_id_idx on public.flows ("userId", position);
-create index if not exists contacts_user_id_idx on public.contacts ("userId", "createdAt" desc);
-create index if not exists tasks_user_id_idx on public.tasks ("userId", "dueDate", "dueTime");
+create index if not exists kyro_flows_user_id_idx on public.kyro_flows ("userId", position);
+create index if not exists kyro_contacts_user_id_idx on public.kyro_contacts ("userId", "createdAt" desc);
+create index if not exists kyro_tasks_user_id_idx on public.kyro_tasks ("userId", "dueDate", "dueTime");
 
-alter table public.flows enable row level security;
-alter table public.contacts enable row level security;
-alter table public.tasks enable row level security;
-alter table public.settings enable row level security;
+alter table public.kyro_flows enable row level security;
+alter table public.kyro_contacts enable row level security;
+alter table public.kyro_tasks enable row level security;
+alter table public.kyro_settings enable row level security;
 
-drop policy if exists "Own flows" on public.flows;
-create policy "Own flows" on public.flows for all using (auth.uid() = "userId") with check (auth.uid() = "userId");
+drop policy if exists "Own Kyro flows" on public.kyro_flows;
+create policy "Own Kyro flows" on public.kyro_flows for all using (auth.uid() = "userId") with check (auth.uid() = "userId");
 
-drop policy if exists "Own contacts" on public.contacts;
-create policy "Own contacts" on public.contacts for all using (auth.uid() = "userId") with check (auth.uid() = "userId");
+drop policy if exists "Own Kyro contacts" on public.kyro_contacts;
+create policy "Own Kyro contacts" on public.kyro_contacts for all using (auth.uid() = "userId") with check (auth.uid() = "userId");
 
-drop policy if exists "Own tasks" on public.tasks;
-create policy "Own tasks" on public.tasks for all using (auth.uid() = "userId") with check (auth.uid() = "userId");
+drop policy if exists "Own Kyro tasks" on public.kyro_tasks;
+create policy "Own Kyro tasks" on public.kyro_tasks for all using (auth.uid() = "userId") with check (auth.uid() = "userId");
 
-drop policy if exists "Own settings" on public.settings;
-create policy "Own settings" on public.settings for all using (auth.uid() = "userId") with check (auth.uid() = "userId");
+drop policy if exists "Own Kyro settings" on public.kyro_settings;
+create policy "Own Kyro settings" on public.kyro_settings for all using (auth.uid() = "userId") with check (auth.uid() = "userId");

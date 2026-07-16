@@ -229,10 +229,10 @@ function normalizePhone(value: string) {
 
 async function readAgendaData(user: AuthUser): Promise<AgendaData> {
   const [flowResult, contactResult, taskResult, settingsResult] = await Promise.all([
-    supabase.from("flows").select("*").order("position", { ascending: true }),
-    supabase.from("contacts").select("*").order("createdAt", { ascending: false }),
-    supabase.from("tasks").select("*").order("dueDate", { ascending: true }).order("dueTime", { ascending: true }),
-    supabase.from("settings").select("*").maybeSingle(),
+    supabase.from("kyro_flows").select("*").order("position", { ascending: true }),
+    supabase.from("kyro_contacts").select("*").order("createdAt", { ascending: false }),
+    supabase.from("kyro_tasks").select("*").order("dueDate", { ascending: true }).order("dueTime", { ascending: true }),
+    supabase.from("kyro_settings").select("*").maybeSingle(),
   ]);
 
   for (const result of [flowResult, contactResult, taskResult, settingsResult]) {
@@ -247,7 +247,7 @@ async function readAgendaData(user: AuthUser): Promise<AgendaData> {
       userId: user.id,
       ownerEmail: user.email,
     }));
-    const seedResult = await supabase.from("flows").insert(seedRows).select("*");
+    const seedResult = await supabase.from("kyro_flows").insert(seedRows).select("*");
     if (seedResult.error) throw seedResult.error;
     flowRows = (seedResult.data || seedRows) as Flow[];
   }
@@ -260,7 +260,7 @@ async function readAgendaData(user: AuthUser): Promise<AgendaData> {
       googleClientId: "",
       sheetId: "",
     };
-    const settingResult = await supabase.from("settings").insert(settingRow).select("*").single();
+    const settingResult = await supabase.from("kyro_settings").insert(settingRow).select("*").single();
     if (settingResult.error) throw settingResult.error;
     setting = settingResult.data as AgendaData["settings"];
   }
@@ -286,7 +286,7 @@ async function mutateAgenda(user: AuthUser, current: AgendaData, payload: Record
     if (current.contacts.some((contact) => normalizePhone(contact.phone) === normalizePhone(phone))) {
       throw new Error("Ja existe um contato com este telefone.");
     }
-    result = await supabase.from("contacts").insert({
+    result = await supabase.from("kyro_contacts").insert({
       id: crypto.randomUUID(), userId: user.id, ownerEmail: user.email, name, phone,
       city: clean(payload.city), niche: clean(payload.niche),
       flowId: clean(payload.flowId) || current.flows[0]?.id, createdAt: now, updatedAt: now,
@@ -294,7 +294,7 @@ async function mutateAgenda(user: AuthUser, current: AgendaData, payload: Record
   } else if (action === "createTask") {
     const title = clean(payload.title);
     if (!title) throw new Error("Informe o titulo da tarefa.");
-    result = await supabase.from("tasks").insert({
+    result = await supabase.from("kyro_tasks").insert({
       id: crypto.randomUUID(), userId: user.id, ownerEmail: user.email, title,
       contactId: clean(payload.contactId) || null,
       flowId: clean(payload.flowId) || current.flows[0]?.id,
@@ -309,26 +309,26 @@ async function mutateAgenda(user: AuthUser, current: AgendaData, payload: Record
       throw new Error("Ja existe um fluxo com este nome.");
     }
     const color = /^#[0-9a-f]{6}$/i.test(clean(payload.color)) ? clean(payload.color) : "#2a9d8f";
-    result = await supabase.from("flows").insert({
+    result = await supabase.from("kyro_flows").insert({
       id: crypto.randomUUID(), userId: user.id, ownerEmail: user.email, name, color,
       position: current.flows.length + 1, createdAt: now,
     });
   } else if (action === "updateContactFlow") {
-    result = await supabase.from("contacts").update({ flowId: clean(payload.flowId), updatedAt: now }).eq("id", clean(payload.contactId));
+    result = await supabase.from("kyro_contacts").update({ flowId: clean(payload.flowId), updatedAt: now }).eq("id", clean(payload.contactId));
   } else if (action === "updateTaskStatus") {
     const status = ["Aberta", "Em andamento", "Concluida"].includes(clean(payload.status)) ? clean(payload.status) : "Aberta";
-    result = await supabase.from("tasks").update({ status, updatedAt: now }).eq("id", clean(payload.taskId));
+    result = await supabase.from("kyro_tasks").update({ status, updatedAt: now }).eq("id", clean(payload.taskId));
   } else if (action === "setTaskCalendarEvent") {
-    result = await supabase.from("tasks").update({ calendarEventId: clean(payload.calendarEventId), updatedAt: now }).eq("id", clean(payload.taskId));
+    result = await supabase.from("kyro_tasks").update({ calendarEventId: clean(payload.calendarEventId), updatedAt: now }).eq("id", clean(payload.taskId));
   } else if (action === "deleteContact") {
     const contactId = clean(payload.contactId);
-    const unlinkResult = await supabase.from("tasks").update({ contactId: null, updatedAt: now }).eq("contactId", contactId);
+    const unlinkResult = await supabase.from("kyro_tasks").update({ contactId: null, updatedAt: now }).eq("contactId", contactId);
     if (unlinkResult.error) throw unlinkResult.error;
-    result = await supabase.from("contacts").delete().eq("id", contactId);
+    result = await supabase.from("kyro_contacts").delete().eq("id", contactId);
   } else if (action === "deleteTask") {
-    result = await supabase.from("tasks").delete().eq("id", clean(payload.taskId));
+    result = await supabase.from("kyro_tasks").delete().eq("id", clean(payload.taskId));
   } else if (action === "updateSettings") {
-    result = await supabase.from("settings").upsert({
+    result = await supabase.from("kyro_settings").upsert({
       userId: user.id, ownerEmail: user.email,
       googleClientId: clean(payload.googleClientId), sheetId: clean(payload.sheetId), updatedAt: now,
     });
