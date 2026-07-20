@@ -16,6 +16,7 @@ import {
   LogOut,
   Mail,
   Menu,
+  EllipsisVertical,
   Phone,
   Pencil,
   Plus,
@@ -396,6 +397,16 @@ async function mutateAgenda(user: AuthUser, current: AgendaData, payload: Record
       id, userId: user.id, ownerEmail: user.email, name, color,
       position: current.flows.length + 1, createdAt: now,
     });
+  } else if (action === "updateFlow") {
+    const flowId = clean(payload.flowId);
+    const name = clean(payload.name);
+    if (!current.flows.some((flow) => flow.id === flowId)) throw new Error("Fluxo nao encontrado.");
+    if (!name) throw new Error("Informe o nome do fluxo.");
+    if (current.flows.some((flow) => flow.id !== flowId && flow.name.toLowerCase() === name.toLowerCase())) {
+      throw new Error("Ja existe um fluxo com este nome.");
+    }
+    const color = /^#[0-9a-f]{6}$/i.test(clean(payload.color)) ? clean(payload.color) : "#2a9d8f";
+    await updateDoc(doc(db, "users", user.id, "flows", flowId), { name, color, updatedAt: now });
   } else if (action === "updateContactFlow") {
     await updateDoc(doc(db, "users", user.id, "contacts", clean(payload.contactId)), { flowId: clean(payload.flowId), updatedAt: now });
   } else if (action === "updateFlowColor") {
@@ -483,6 +494,8 @@ export function AgendaApp() {
   const [taskContactFilter, setTaskContactFilter] = useState("all");
   const [taskContactId, setTaskContactId] = useState("");
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
+  const [editingFlow, setEditingFlow] = useState<Flow | null>(null);
+  const [flowMenuId, setFlowMenuId] = useState("");
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -529,6 +542,25 @@ export function AgendaApp() {
       unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (!flowMenuId) return;
+
+    function closeFlowMenu(event: PointerEvent) {
+      if (event.target instanceof Element && !event.target.closest(".flow-menu-wrap")) setFlowMenuId("");
+    }
+
+    function closeFlowMenuWithKeyboard(event: KeyboardEvent) {
+      if (event.key === "Escape") setFlowMenuId("");
+    }
+
+    document.addEventListener("pointerdown", closeFlowMenu);
+    document.addEventListener("keydown", closeFlowMenuWithKeyboard);
+    return () => {
+      document.removeEventListener("pointerdown", closeFlowMenu);
+      document.removeEventListener("keydown", closeFlowMenuWithKeyboard);
+    };
+  }, [flowMenuId]);
 
   const mutate = useCallback(async (payload: Record<string, unknown>) => {
     if (!authUser) throw new Error("Entre com sua conta Google.");
@@ -603,6 +635,7 @@ export function AgendaApp() {
   function changeView(nextView: ViewName) {
     setView(nextView);
     setMenuOpen(false);
+    setFlowMenuId("");
   }
 
   function openTaskModal() {
@@ -643,15 +676,31 @@ export function AgendaApp() {
     }
   }
 
-  async function createFlow(event: FormEvent<HTMLFormElement>) {
+  function openFlowModal(flow: Flow | null = null) {
+    setEditingFlow(flow);
+    setFlowMenuId("");
+    setModal("flow");
+  }
+
+  function closeFlowModal() {
+    setEditingFlow(null);
+    setModal(null);
+  }
+
+  async function saveFlow(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
     const values = new FormData(form);
     try {
-      await mutate({ action: "createFlow", name: values.get("name"), color: values.get("color") });
+      await mutate({
+        action: editingFlow ? "updateFlow" : "createFlow",
+        flowId: editingFlow?.id,
+        name: values.get("name"),
+        color: values.get("color"),
+      });
       form.reset();
-      setModal(null);
-      showToast("Fluxo criado.");
+      closeFlowModal();
+      showToast(editingFlow ? "Fluxo atualizado." : "Fluxo criado.");
     } catch {
       // The error banner already contains the useful message.
     }
@@ -705,6 +754,7 @@ export function AgendaApp() {
   }
 
   async function removeFlow(flow: Flow) {
+    setFlowMenuId("");
     const fallbackFlow = data.flows.find((item) => item.id !== flow.id);
     if (!fallbackFlow) {
       setError("Mantenha pelo menos um fluxo na agenda.");
@@ -994,16 +1044,36 @@ export function AgendaApp() {
                 <div className="flow-lane-actions">
                   <span className="flow-count">{flowContacts.length}</span>
                   {!compact && (
-                    <button
-                      className="flow-delete-button"
-                      type="button"
-                      title={data.flows.length > 1 ? `Excluir ${flow.name}` : "Mantenha pelo menos um fluxo"}
-                      aria-label={`Excluir fluxo ${flow.name}`}
-                      disabled={data.flows.length <= 1 || saving}
-                      onClick={() => void removeFlow(flow)}
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                    <div className="flow-menu-wrap">
+                      <button
+                        className="flow-menu-trigger"
+                        type="button"
+                        title={`Opcoes de ${flow.name}`}
+                        aria-label={`Opcoes do fluxo ${flow.name}`}
+                        aria-haspopup="menu"
+                        aria-expanded={flowMenuId === flow.id}
+                        onClick={() => setFlowMenuId((openId) => openId === flow.id ? "" : flow.id)}
+                      >
+                        <EllipsisVertical size={16} />
+                      </button>
+                      {flowMenuId === flow.id && (
+                        <div className="flow-action-menu" role="menu" aria-label={`Acoes de ${flow.name}`}>
+                          <button type="button" role="menuitem" onClick={() => openFlowModal(flow)}>
+                            <Pencil size={14} /> Editar
+                          </button>
+                          <button
+                            className="is-danger"
+                            type="button"
+                            role="menuitem"
+                            disabled={data.flows.length <= 1 || saving}
+                            title={data.flows.length > 1 ? `Apagar ${flow.name}` : "Mantenha pelo menos um fluxo"}
+                            onClick={() => void removeFlow(flow)}
+                          >
+                            <Trash2 size={14} /> Apagar
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
               </header>
@@ -1189,7 +1259,7 @@ export function AgendaApp() {
       <>
         <div className="page-heading compact-heading">
           <div><span className="page-kicker">Pipeline</span><h1>Fluxos</h1><p>Organize cada contato na etapa certa</p></div>
-          <button className="button primary" type="button" onClick={() => setModal("flow")}><Plus size={17} /> Novo fluxo</button>
+          <button className="button primary" type="button" onClick={() => openFlowModal()}><Plus size={17} /> Novo fluxo</button>
         </div>
         {renderFlowBoard(false)}
       </>
@@ -1321,11 +1391,11 @@ export function AgendaApp() {
       )}
 
       {modal === "flow" && (
-        <Modal title="Novo fluxo" icon={<Workflow />} onClose={() => setModal(null)}>
-          <form className="modal-form" onSubmit={createFlow}>
-            <label>Nome do fluxo<input name="name" required autoFocus placeholder="Ex.: Proposta enviada" /></label>
-            <label>Cor<input className="color-input" name="color" type="color" defaultValue="#2a9d8f" /></label>
-            <div className="modal-actions"><button className="button text" type="button" onClick={() => setModal(null)}>Cancelar</button><button className="button primary" type="submit" disabled={saving}>{saving ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />} Criar fluxo</button></div>
+        <Modal title={editingFlow ? "Editar fluxo" : "Novo fluxo"} icon={editingFlow ? <Pencil /> : <Workflow />} onClose={closeFlowModal}>
+          <form className="modal-form" onSubmit={saveFlow}>
+            <label>Nome do fluxo<input name="name" required autoFocus placeholder="Ex.: Proposta enviada" defaultValue={editingFlow?.name || ""} /></label>
+            <label>Cor<input className="color-input" name="color" type="color" defaultValue={editingFlow?.color || "#2a9d8f"} /></label>
+            <div className="modal-actions"><button className="button text" type="button" onClick={closeFlowModal}>Cancelar</button><button className="button primary" type="submit" disabled={saving}>{saving ? <LoaderCircle className="spin" size={17} /> : editingFlow ? <Pencil size={17} /> : <Plus size={17} />} {editingFlow ? "Salvar alteracoes" : "Criar fluxo"}</button></div>
           </form>
         </Modal>
       )}
