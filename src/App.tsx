@@ -29,7 +29,7 @@ import {
   X,
 } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { User } from "firebase/auth";
 import { GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut as firebaseSignOut } from "firebase/auth";
 import { collection, deleteDoc, doc, getDoc, getDocs, setDoc, updateDoc, writeBatch } from "firebase/firestore";
@@ -119,6 +119,21 @@ const EMPTY_GOOGLE: GoogleSession = {
   email: "",
   expiresAt: 0,
 };
+
+const PROSPECT_MIGRATION_ID = "prospects-clinics-20260720";
+const KYRO_OWNER_EMAIL = "kyroatendimentos@gmail.com";
+const PROSPECT_CLINICS = [
+  { name: "Clinica Evoluir - Fisioterapia e Saude", phone: "(32) 98509-4363" },
+  { name: "Hidromed Centro Integrado", phone: "(32) 3372-2500" },
+  { name: "ClinVida", phone: "(32) 3373-1686" },
+  { name: "Clinica Vitalsan", phone: "(32) 99167-1915" },
+  { name: "Le Vitta Fisioterapia e Pilates", phone: "(32) 98403-2253" },
+  { name: "Clinica Zugaiar - Centro Medico Especializado", phone: "(32) 99812-7969" },
+  { name: "Clinica Sante - Saude e Estetica", phone: "(32) 98495-9646" },
+  { name: "Vitage - Saude e Beleza", phone: "(32) 3371-8105" },
+  { name: "Renovare Clinica de Estetica", phone: "(32) 98807-2568" },
+  { name: "Clinica de Estetica Fisioclim", phone: "(32) 3372-1651" },
+];
 
 function requireValidGoogleToken(session: GoogleSession) {
   if (!session.connected || !session.token || session.expiresAt <= Date.now()) {
@@ -288,6 +303,10 @@ function normalizePhone(value: string) {
   return value.replace(/\D/g, "");
 }
 
+function normalizeText(value: string) {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
+}
+
 async function readAgendaData(user: AuthUser): Promise<AgendaData> {
   const [flowSnapshot, contactSnapshot, taskSnapshot, settingsSnapshot] = await Promise.all([
     getDocs(collection(db, "users", user.id, "flows")),
@@ -335,6 +354,68 @@ async function readAgendaData(user: AuthUser): Promise<AgendaData> {
     contacts,
     tasks,
     settings: setting,
+  };
+}
+
+async function runProspectMigration(user: AuthUser, current: AgendaData) {
+  const markerRef = doc(db, "users", user.id, "maintenance", PROSPECT_MIGRATION_ID);
+  const markerSnapshot = await getDoc(markerRef);
+  if (markerSnapshot.exists()) {
+    return { data: await readAgendaData(user), removed: 0, added: 0, alreadyApplied: true };
+  }
+
+  const removableNiches = new Set(["barbearias", "barbearia", "saloes de beleza", "salao de beleza"]);
+  const contactsToRemove = current.contacts.filter((contact) => removableNiches.has(normalizeText(contact.niche)));
+  const removedIds = new Set(contactsToRemove.map((contact) => contact.id));
+  const existingPhones = new Set(current.contacts.map((contact) => normalizePhone(contact.phone)));
+  const entryFlow = current.flows.find((flow) => normalizeText(flow.name) === "entrada") || current.flows[0];
+  if (!entryFlow) throw new Error("O fluxo Entrada nao foi encontrado.");
+
+  const now = new Date().toISOString();
+  const batch = writeBatch(db);
+  for (const task of current.tasks.filter((item) => item.contactId && removedIds.has(item.contactId))) {
+    batch.update(doc(db, "users", user.id, "tasks", task.id), { contactId: null, updatedAt: now });
+  }
+  for (const contact of contactsToRemove) {
+    batch.delete(doc(db, "users", user.id, "contacts", contact.id));
+  }
+
+  let added = 0;
+  for (const clinic of PROSPECT_CLINICS) {
+    const normalizedPhone = normalizePhone(clinic.phone);
+    if (existingPhones.has(normalizedPhone)) continue;
+    existingPhones.add(normalizedPhone);
+    const id = crypto.randomUUID();
+    batch.set(doc(db, "users", user.id, "contacts", id), {
+      id,
+      userId: user.id,
+      ownerEmail: user.email,
+      name: clinic.name,
+      phone: clinic.phone,
+      city: "Sao Joao del-Rei",
+      niche: "Clinicas",
+      flowId: entryFlow.id,
+      createdAt: now,
+      updatedAt: now,
+    });
+    added += 1;
+  }
+
+  batch.set(markerRef, {
+    id: PROSPECT_MIGRATION_ID,
+    userId: user.id,
+    ownerEmail: user.email,
+    removed: contactsToRemove.length,
+    added,
+    completedAt: now,
+  });
+  await batch.commit();
+
+  return {
+    data: await readAgendaData(user),
+    removed: contactsToRemove.length,
+    added,
+    alreadyApplied: false,
   };
 }
 
@@ -442,6 +523,7 @@ export function AgendaApp() {
   const [taskContactFilter, setTaskContactFilter] = useState("all");
   const [taskContactId, setTaskContactId] = useState("");
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
+  const prospectMigrationStarted = useRef(false);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -488,6 +570,31 @@ export function AgendaApp() {
       unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (prospectMigrationStarted.current || loading || !authUser || !data.settings.userId) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("maintenance") !== PROSPECT_MIGRATION_ID) return;
+    prospectMigrationStarted.current = true;
+
+    if (authUser.email.toLowerCase() !== KYRO_OWNER_EMAIL) {
+      return;
+    }
+
+    void runProspectMigration(authUser, data)
+      .then((result) => {
+        setData(result.data);
+        showToast(result.alreadyApplied
+          ? "A manutencao ja havia sido concluida."
+          : `${result.removed} contato(s) removido(s) e ${result.added} clinica(s) adicionada(s).`);
+        params.delete("maintenance");
+        const nextQuery = params.toString();
+        window.history.replaceState({}, "", `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}`);
+      })
+      .catch((migrationError) => {
+        setError(migrationError instanceof Error ? migrationError.message : "Nao foi possivel atualizar os contatos.");
+      });
+  }, [authUser, data, loading, showToast]);
 
   const mutate = useCallback(async (payload: Record<string, unknown>) => {
     if (!authUser) throw new Error("Entre com sua conta Google.");
