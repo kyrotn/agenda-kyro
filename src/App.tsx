@@ -398,6 +398,12 @@ async function mutateAgenda(user: AuthUser, current: AgendaData, payload: Record
     });
   } else if (action === "updateContactFlow") {
     await updateDoc(doc(db, "users", user.id, "contacts", clean(payload.contactId)), { flowId: clean(payload.flowId), updatedAt: now });
+  } else if (action === "updateFlowColor") {
+    const flowId = clean(payload.flowId);
+    const color = clean(payload.color);
+    if (!current.flows.some((flow) => flow.id === flowId)) throw new Error("Fluxo nao encontrado.");
+    if (!/^#[0-9a-f]{6}$/i.test(color)) throw new Error("Cor invalida.");
+    await updateDoc(doc(db, "users", user.id, "flows", flowId), { color, updatedAt: now });
   } else if (action === "updateTaskStatus") {
     const status = ["Aberta", "Em andamento", "Concluida"].includes(clean(payload.status)) ? clean(payload.status) : "Aberta";
     await updateDoc(doc(db, "users", user.id, "tasks", clean(payload.taskId)), { status, updatedAt: now });
@@ -649,6 +655,15 @@ export function AgendaApp() {
     try {
       await mutate({ action: "updateContactFlow", contactId, flowId });
       showToast("Contato movido.");
+    } catch {
+      // The error banner already contains the useful message.
+    }
+  }
+
+  async function updateFlowColor(flowId: string, color: string) {
+    try {
+      await mutate({ action: "updateFlowColor", flowId, color });
+      showToast("Cor do fluxo atualizada.");
     } catch {
       // The error banner already contains the useful message.
     }
@@ -907,7 +922,17 @@ export function AgendaApp() {
           return (
             <section className="flow-lane" key={flow.id} style={{ "--flow-color": flow.color } as React.CSSProperties}>
               <header className="flow-lane-head">
-                <span className="flow-dot" />
+                {compact ? <span className="flow-dot" /> : (
+                  <label className="flow-color-control" title={`Alterar cor de ${flow.name}`}>
+                    <input
+                      aria-label={`Cor de ${flow.name}`}
+                      type="color"
+                      value={flow.color}
+                      onChange={(event) => void updateFlowColor(flow.id, event.target.value)}
+                    />
+                    <span className="flow-dot" />
+                  </label>
+                )}
                 <strong>{flow.name}</strong>
                 <span>{flowContacts.length}</span>
               </header>
