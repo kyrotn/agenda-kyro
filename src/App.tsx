@@ -404,6 +404,41 @@ async function mutateAgenda(user: AuthUser, current: AgendaData, payload: Record
     if (!current.flows.some((flow) => flow.id === flowId)) throw new Error("Fluxo nao encontrado.");
     if (!/^#[0-9a-f]{6}$/i.test(color)) throw new Error("Cor invalida.");
     await updateDoc(doc(db, "users", user.id, "flows", flowId), { color, updatedAt: now });
+  } else if (action === "deleteFlow") {
+    const flowId = clean(payload.flowId);
+    const fallbackFlowId = clean(payload.fallbackFlowId);
+    if (!current.flows.some((flow) => flow.id === flowId)) throw new Error("Fluxo nao encontrado.");
+    if (current.flows.length <= 1) throw new Error("Mantenha pelo menos um fluxo na agenda.");
+    if (flowId === fallbackFlowId || !current.flows.some((flow) => flow.id === fallbackFlowId)) {
+      throw new Error("Selecione um fluxo valido para receber os itens.");
+    }
+
+    const linkedItems = [
+      ...current.contacts
+        .filter((contact) => contact.flowId === flowId)
+        .map((contact) => ({ collectionName: "contacts", id: contact.id })),
+      ...current.tasks
+        .filter((task) => task.flowId === flowId)
+        .map((task) => ({ collectionName: "tasks", id: task.id })),
+    ];
+
+    for (let index = 0; index < linkedItems.length; index += 450) {
+      const moveBatch = writeBatch(db);
+      for (const item of linkedItems.slice(index, index + 450)) {
+        moveBatch.update(doc(db, "users", user.id, item.collectionName, item.id), { flowId: fallbackFlowId, updatedAt: now });
+      }
+      await moveBatch.commit();
+    }
+
+    const deleteBatch = writeBatch(db);
+    current.flows
+      .filter((flow) => flow.id !== flowId)
+      .sort((a, b) => a.position - b.position)
+      .forEach((flow, index) => {
+        deleteBatch.update(doc(db, "users", user.id, "flows", flow.id), { position: index + 1, updatedAt: now });
+      });
+    deleteBatch.delete(doc(db, "users", user.id, "flows", flowId));
+    await deleteBatch.commit();
   } else if (action === "updateTaskStatus") {
     const status = ["Aberta", "Em andamento", "Concluida"].includes(clean(payload.status)) ? clean(payload.status) : "Aberta";
     await updateDoc(doc(db, "users", user.id, "tasks", clean(payload.taskId)), { status, updatedAt: now });
@@ -664,6 +699,28 @@ export function AgendaApp() {
     try {
       await mutate({ action: "updateFlowColor", flowId, color });
       showToast("Cor do fluxo atualizada.");
+    } catch {
+      // The error banner already contains the useful message.
+    }
+  }
+
+  async function removeFlow(flow: Flow) {
+    const fallbackFlow = data.flows.find((item) => item.id !== flow.id);
+    if (!fallbackFlow) {
+      setError("Mantenha pelo menos um fluxo na agenda.");
+      return;
+    }
+
+    const contactCount = data.contacts.filter((contact) => contact.flowId === flow.id).length;
+    const taskCount = data.tasks.filter((task) => task.flowId === flow.id).length;
+    const transferNotice = contactCount || taskCount
+      ? `\n\n${contactCount} contato(s) e ${taskCount} tarefa(s) serao movidos para "${fallbackFlow.name}".`
+      : "";
+    if (!window.confirm(`Excluir o fluxo "${flow.name}"?${transferNotice}`)) return;
+
+    try {
+      await mutate({ action: "deleteFlow", flowId: flow.id, fallbackFlowId: fallbackFlow.id });
+      showToast("Fluxo excluido.");
     } catch {
       // The error banner already contains the useful message.
     }
@@ -934,7 +991,21 @@ export function AgendaApp() {
                   </label>
                 )}
                 <strong>{flow.name}</strong>
-                <span>{flowContacts.length}</span>
+                <div className="flow-lane-actions">
+                  <span className="flow-count">{flowContacts.length}</span>
+                  {!compact && (
+                    <button
+                      className="flow-delete-button"
+                      type="button"
+                      title={data.flows.length > 1 ? `Excluir ${flow.name}` : "Mantenha pelo menos um fluxo"}
+                      aria-label={`Excluir fluxo ${flow.name}`}
+                      disabled={data.flows.length <= 1 || saving}
+                      onClick={() => void removeFlow(flow)}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </div>
               </header>
               <div className="flow-leads">
                 {visibleContacts.map((contact) => (
