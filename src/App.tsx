@@ -17,6 +17,7 @@ import {
   Mail,
   Menu,
   Phone,
+  Pencil,
   Plus,
   Search,
   Settings2,
@@ -354,6 +355,23 @@ async function mutateAgenda(user: AuthUser, current: AgendaData, payload: Record
       city: clean(payload.city), niche: clean(payload.niche),
       flowId: clean(payload.flowId) || current.flows[0]?.id, createdAt: now, updatedAt: now,
     });
+  } else if (action === "updateContact") {
+    const contactId = clean(payload.contactId);
+    const name = clean(payload.name);
+    const phone = clean(payload.phone);
+    if (!current.contacts.some((contact) => contact.id === contactId)) throw new Error("Contato nao encontrado.");
+    if (!name || !phone) throw new Error("Informe o nome e o telefone.");
+    if (current.contacts.some((contact) => contact.id !== contactId && normalizePhone(contact.phone) === normalizePhone(phone))) {
+      throw new Error("Ja existe um contato com este telefone.");
+    }
+    await updateDoc(doc(db, "users", user.id, "contacts", contactId), {
+      name,
+      phone,
+      city: clean(payload.city),
+      niche: clean(payload.niche),
+      flowId: clean(payload.flowId) || current.flows[0]?.id,
+      updatedAt: now,
+    });
   } else if (action === "createTask") {
     const title = clean(payload.title);
     if (!title) throw new Error("Informe o titulo da tarefa.");
@@ -423,6 +441,7 @@ export function AgendaApp() {
   const [google, setGoogle] = useState<GoogleSession>(EMPTY_GOOGLE);
   const [taskContactFilter, setTaskContactFilter] = useState("all");
   const [taskContactId, setTaskContactId] = useState("");
+  const [editingContact, setEditingContact] = useState<Contact | null>(null);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -551,13 +570,24 @@ export function AgendaApp() {
     setModal("task");
   }
 
-  async function createContact(event: FormEvent<HTMLFormElement>) {
+  function openContactModal(contact: Contact | null = null) {
+    setEditingContact(contact);
+    setModal("contact");
+  }
+
+  function closeContactModal() {
+    setEditingContact(null);
+    setModal(null);
+  }
+
+  async function saveContact(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
     const values = new FormData(form);
     try {
       await mutate({
-        action: "createContact",
+        action: editingContact ? "updateContact" : "createContact",
+        contactId: editingContact?.id,
         name: values.get("name"),
         phone: values.get("phone"),
         city: values.get("city"),
@@ -565,8 +595,8 @@ export function AgendaApp() {
         flowId: values.get("flowId"),
       });
       form.reset();
-      setModal(null);
-      showToast("Contato salvo.");
+      closeContactModal();
+      showToast(editingContact ? "Contato atualizado." : "Contato salvo.");
     } catch {
       // The error banner already contains the useful message.
     }
@@ -927,7 +957,7 @@ export function AgendaApp() {
             <button className="button secondary" type="button" onClick={openTaskModal}>
               <ListTodo size={17} /> Nova tarefa
             </button>
-            <button className="button primary" type="button" onClick={() => setModal("contact")}>
+            <button className="button primary" type="button" onClick={() => openContactModal()}>
               <UserRoundPlus size={17} /> Novo contato
             </button>
           </div>
@@ -988,7 +1018,7 @@ export function AgendaApp() {
       <>
         <div className="page-heading compact-heading">
           <div><span className="page-kicker">Relacionamento</span><h1>Contatos</h1><p>{data.contacts.length} pessoa(s) cadastrada(s)</p></div>
-          <button className="button primary" type="button" onClick={() => setModal("contact")}><Plus size={17} /> Adicionar contato</button>
+          <button className="button primary" type="button" onClick={() => openContactModal()}><Plus size={17} /> Adicionar contato</button>
         </div>
         <section className="surface data-surface">
           <div className="table-toolbar">
@@ -1005,7 +1035,10 @@ export function AgendaApp() {
                 <a className="phone-link" href={whatsAppUrl(contact.phone)} target="_blank" rel="noreferrer"><Phone size={15} /> {contact.phone}</a>
                 <span>{contact.niche || "Sem nicho"}</span>
                 <label className="select-wrap"><span className="flow-dot" style={{ background: flowMap.get(contact.flowId)?.color }} /><select aria-label={`Fluxo de ${contact.name}`} value={contact.flowId} onChange={(event) => void updateContactFlow(contact.id, event.target.value)}>{data.flows.map((flow) => <option key={flow.id} value={flow.id}>{flow.name}</option>)}</select><ChevronDown size={14} /></label>
-                <button className="icon-button danger" type="button" title="Excluir contato" aria-label={`Excluir ${contact.name}`} onClick={() => void removeContact(contact)}><Trash2 size={16} /></button>
+                <div className="row-actions">
+                  <button className="icon-button edit" type="button" title="Editar contato" aria-label={`Editar ${contact.name}`} onClick={() => openContactModal(contact)}><Pencil size={16} /></button>
+                  <button className="icon-button danger" type="button" title="Excluir contato" aria-label={`Excluir ${contact.name}`} onClick={() => void removeContact(contact)}><Trash2 size={16} /></button>
+                </div>
               </div>
             ))}
             {!filteredContacts.length && <EmptyState icon={<Users />} title="Nenhum contato" text="Adicione o primeiro contato para iniciar seu fluxo." />}
@@ -1162,14 +1195,14 @@ export function AgendaApp() {
       </section>
 
       {modal === "contact" && (
-        <Modal title="Novo contato" icon={<UserRoundPlus />} onClose={() => setModal(null)}>
-          <form className="modal-form" onSubmit={createContact}>
-            <label>Nome<input name="name" required autoFocus placeholder="Nome completo" /></label>
-            <label>Telefone<input name="phone" required inputMode="tel" placeholder="(00) 00000-0000" /></label>
-            <label>Cidade<input name="city" placeholder="Ex.: Sao Paulo" /></label>
-            <label>Nicho<input name="niche" placeholder="Ex.: Clinica, comercio, servicos" /></label>
-            <label>Fluxo<select name="flowId" required defaultValue={data.flows[0]?.id}>{data.flows.map((flow) => <option key={flow.id} value={flow.id}>{flow.name}</option>)}</select></label>
-            <div className="modal-actions"><button className="button text" type="button" onClick={() => setModal(null)}>Cancelar</button><button className="button primary" type="submit" disabled={saving}>{saving ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />} Salvar contato</button></div>
+        <Modal title={editingContact ? "Editar contato" : "Novo contato"} icon={editingContact ? <Pencil /> : <UserRoundPlus />} onClose={closeContactModal}>
+          <form className="modal-form" onSubmit={saveContact}>
+            <label>Nome<input name="name" required autoFocus placeholder="Nome completo" defaultValue={editingContact?.name || ""} /></label>
+            <label>Telefone<input name="phone" required inputMode="tel" placeholder="(00) 00000-0000" defaultValue={editingContact?.phone || ""} /></label>
+            <label>Cidade<input name="city" placeholder="Ex.: Sao Paulo" defaultValue={editingContact?.city || ""} /></label>
+            <label>Nicho<input name="niche" placeholder="Ex.: Clinica, comercio, servicos" defaultValue={editingContact?.niche || ""} /></label>
+            <label>Fluxo<select name="flowId" required defaultValue={editingContact?.flowId || data.flows[0]?.id}>{data.flows.map((flow) => <option key={flow.id} value={flow.id}>{flow.name}</option>)}</select></label>
+            <div className="modal-actions"><button className="button text" type="button" onClick={closeContactModal}>Cancelar</button><button className="button primary" type="submit" disabled={saving}>{saving ? <LoaderCircle className="spin" size={17} /> : editingContact ? <Pencil size={17} /> : <Plus size={17} />} {editingContact ? "Salvar alteracoes" : "Salvar contato"}</button></div>
           </form>
         </Modal>
       )}

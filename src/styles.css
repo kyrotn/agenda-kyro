@@ -367,7 +367,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .table-toolbar strong { font-size: 13px; }
 .table-toolbar span { color: var(--muted); font-size: 11px; }
 .contact-table { display: grid; }
-.contact-table-head, .contact-row { display: grid; grid-template-columns: minmax(220px, 1.25fr) minmax(150px, .8fr) minmax(120px, .65fr) minmax(160px, .8fr) 42px; gap: 12px; align-items: center; }
+.contact-table-head, .contact-row { display: grid; grid-template-columns: minmax(220px, 1.25fr) minmax(150px, .8fr) minmax(120px, .65fr) minmax(160px, .8fr) 78px; gap: 12px; align-items: center; }
 .contact-table-head { min-height: 38px; padding: 0 12px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); color: var(--muted); background: var(--surface-2); font-size: 10px; font-weight: 800; text-transform: uppercase; }
 .contact-row { min-height: 66px; padding: 8px 12px; border-bottom: 1px solid #e6eeec; font-size: 11px; }
 .contact-row:last-child { border-bottom: 0; }
@@ -378,6 +378,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .person-cell small { margin-top: 3px; color: var(--muted); font-size: 10px; }
 .phone-link { width: fit-content; display: inline-flex; align-items: center; gap: 6px; color: #276b55; font-weight: 700; }
 .phone-link:hover { text-decoration: underline; }
+.row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.icon-button.edit:hover { color: var(--teal-dark); border-color: #9bcac3; background: #edf8f6; }
 .select-wrap { min-width: 0; height: 34px; display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 7px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
 .select-wrap select { min-width: 0; width: 100%; height: 30px; border: 0; outline: 0; color: #435456; background: transparent; appearance: none; font-size: 10px; }
 
@@ -536,7 +538,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .quick-links-panel { grid-column: auto; }
   .task-row { grid-template-columns: 34px minmax(180px,1fr) 70px 120px 120px 38px; }
   .task-row .flow-label { display: none; }
-  .contact-table-head, .contact-row { grid-template-columns: minmax(200px,1.2fr) minmax(140px,.8fr) minmax(150px,.8fr) 42px; }
+  .contact-table-head, .contact-row { grid-template-columns: minmax(200px,1.2fr) minmax(140px,.8fr) minmax(150px,.8fr) 78px; }
   .contact-table-head > span:nth-child(3), .contact-row > span:nth-child(3) { display: none; }
 }
 
@@ -559,9 +561,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .page-heading { align-items: flex-start; }
   .page-heading h1 { font-size: 25px; }
   .contact-table-head { display: none; }
-  .contact-row { grid-template-columns: minmax(0,1fr) 38px; gap: 9px; padding: 12px 4px; }
+  .contact-row { grid-template-columns: minmax(0,1fr) 78px; gap: 9px; padding: 12px 4px; }
   .contact-row .phone-link, .contact-row > span:nth-child(3), .contact-row .select-wrap { grid-column: 1; margin-left: 43px; }
-  .contact-row .icon-button { grid-column: 2; grid-row: 1; }
+  .contact-row .row-actions { grid-column: 2; grid-row: 1; }
   .task-row { grid-template-columns: 32px minmax(0,1fr) 38px; gap: 8px; padding: 12px 2px; }
   .task-row .priority, .task-row .flow-label, .task-row .date-cell, .task-row .status-select { grid-column: 2; width: fit-content; }
   .task-row .status-select { min-width: 124px; }
