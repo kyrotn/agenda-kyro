@@ -928,7 +928,7 @@ export function AgendaApp() {
                       aria-label={`Cor de ${flow.name}`}
                       type="color"
                       value={flow.color}
-                      onChange={(event) => void updateFlowColor(flow.id, event.target.value)}
+                      onInput={(event) => void updateFlowColor(flow.id, event.currentTarget.value)}
                     />
                     <span className="flow-dot" />
                   </label>
